@@ -1,0 +1,45 @@
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gau2publish"
+version = "1.0.0"
+description = "Convert Gaussian (.log) outputs into .geom/.png/.cdxml and assemble a DOCX plus an optional ALL.cdxml mosaic"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [
+  { name = "Raúl Losantos Cabello" }
+]
+keywords = ["Gaussian", "chemistry", "cclib", "rdkit", "docx", "cdxml"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Topic :: Scientific/Engineering :: Chemistry"
+]
+
+dependencies = [
+  "numpy>=1.23",
+  "pandas>=1.5",
+  "cclib>=1.8",
+  "periodictable>=1.6",
+  "rdkit>=2022.09",
+  "python-docx>=0.8.11"
+]
+
+
+[project.optional-dependencies]
+render = ["xyzrender"]
+cdxml = ["pycdxml"]
+
+[project.scripts]
+gau2publish = "gau2publish.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

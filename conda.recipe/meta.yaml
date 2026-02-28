@@ -1,0 +1,53 @@
+
+{% set name = "gau2publish" %}
+{% set version = "1.0.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  git_url: https://github.com/ralosant/Gau2publish.git
+  git_tag: v{{ version }}
+
+build:
+  number: 0
+  script: {{ PYTHON }} -m pip install . -vv
+
+requirements:
+  host:
+    - python >=3.9
+    - pip
+    - setuptools >=69
+  run:
+    - python >=3.9
+    - numpy >=1.23
+    - pandas >=1.5
+    - cclib >=1.8
+    - periodictable >=1.6
+    - rdkit >=2022.09
+    - python-docx >=0.8.11
+    - openbabel>=3.1.1
+    - pycdxml
+    - xyzrender
+
+test:
+  imports:
+    - gau2publish
+  commands:
+    - gau2publish --help
+  requires:
+    - pip
+
+about:
+  home: https://github.com/ralosant/Gau2publish
+  license: MIT
+  license_file: LICENSE
+  summary: "Gaussian .log → .geom/.png/.cdxml + DOCX + ALL.cdxml"
+  description: |
+    Converts Gaussian outputs into ordered geometries, 3D renders and
+    publication-ready documents. Integrates cclib, RDKit, Open Babel and pycdxml.
+
+extra:
+  recipe-maintainers:
+    - <your-conda-forge-user>
