@@ -1,4 +1,4 @@
-i#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Gau2Publish
@@ -174,9 +174,7 @@ def write_geom_file(
         "y": [float(c[1]) for c in sorted_coords],
         "z": [float(c[2]) for c in sorted_coords],
     })
-    content = "
-".join(header) + "
-" + df.to_string(index=False, header=False)
+    content = "\n".join(header) + "\n" + df.to_string(index=False, header=False)
 
     geom_path = out_base.with_suffix('.geom')
     geom_path.write_text(content, encoding='utf-8')
@@ -377,8 +375,7 @@ def build_parser() -> argparse.ArgumentParser:
         "Gau2Publish: .log -> (.geom + .png + .cdxml) -> DOCX + optional ALL.cdxml"
     )
     epilog = (
-        "Example:
-"
+        "Example:"
         " gau2publish *.log \
 "        " --docx ESI_xyz.docx \
 "        " --method wB97XD \
@@ -386,8 +383,7 @@ def build_parser() -> argparse.ArgumentParser:
 "        " --slide-columns 6 \
 "        " --xyzrender-args '-I -S 1200' \
 "        " --rebuild \
-"        " --scf-index 4,2
-"
+"        " --scf-index 4,2"
     )
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter, epilog=epilog)
 
@@ -495,7 +491,7 @@ def main() -> None:
                     print(f"[info] xyzrender args: {shlex.split(extra) if isinstance(extra, str) else extra}")
                 run_xyzrender(log_path, png_path, extra)
                 png_created = os.path.isfile(png_path)
-		cleanup_glob("*.v000.xyz", verbose=args.verbose)
+	            cleanup_glob("*.v000.xyz", verbose=args.verbose)
             except Exception as exc:
                 print(f"[warning] xyzrender unavailable or failed: {exc}", file=sys.stderr)
         else:
