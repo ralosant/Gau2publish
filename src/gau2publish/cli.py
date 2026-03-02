@@ -12,7 +12,7 @@ Convert Gaussian (.log) outputs into:
  - ALL.cdxml: mosaic with thumbnails and properties
 
 Highlights:
- - `-v/--verbose`: keep intermediates (.geom, .png, .sdf, .cdxml) and increase logging
+ - `-v/--verbose`: keep intermediates (.geom, .png, .mol2, .cdxml) and increase logging
  - `--xyzrender-args`: forward arbitrary flags to `xyzrender` (e.g., `-I`)
  - If `-I` is present in `--xyzrender-args`, files matching `*.v000.xyz` are removed after rendering
  - `--no-xyzrender`: skip 3D rendering (no PNG generated)
@@ -21,7 +21,7 @@ Highlights:
    * Distances from the end: D_base = base + 1; D_high = (base + 1) - high
    * Python indices: idx_base = -D_base; idx_high = -D_high
    * Default: idx_base = -1; idx_high = -1
-By default (without `-v`) the intermediates `.sdf`, `.geom`, `.png`, and `.cdxml` are deleted after being embedded into the DOCX/slide.
+By default (without `-v`) the intermediates `.mol2`, `.geom`, `.png`, and `.cdxml` are deleted after being embedded into the DOCX/slide.
 """
 from __future__ import annotations
 
@@ -41,6 +41,7 @@ import pandas as pd
 import cclib
 from periodictable import elements
 from rdkit import Chem
+from rdkit.Chem.rdchem import BondDir, BondStereo, ChiralType
 
 # Word export
 from docx import Document
@@ -128,7 +129,7 @@ def read_gaussian_output(gaussian_output_file: str, *, scf_index: str | None = N
     frequencies = list(getattr(data, "vibfreqs", []))
     atomic_numbers = list(map(int, getattr(data, "atomnos", [])))
     geometry = np.array(getattr(data, "atomcoords", [[0, 0, 0]]))[-1]
-
+    
     return (
         charge, mult, scf_energy, scf_energy_high,
         enthalpy, free_energy, free_energy_corr,
@@ -154,12 +155,19 @@ def write_geom_file(
     sorted_coords = [geometry[i] for i in order]
     sorted_znums = [atomic_numbers[i] for i in order]
     symbols = atomic_numbers_to_symbols(sorted_znums)
+    # Avoid repeated High energy method if is the standardly used
+    if scf_energy == scf_energy_high:
+        header = [
+            f"{charge} {mult}",
+            f"SCF Energy: {scf_energy:.6f} h",
+        ]
+    else:
+        header = [
+            f"{charge} {mult}",
+            f"SCF Energy: {scf_energy:.6f} h",
+            f"SCF Energy {method}: {scf_energy_high:.6f} h",
+        ]
 
-    header = [
-        f"{charge} {mult}",
-        f"SCF Energy: {scf_energy:.6f} h",
-        f"SCF Energy {method}: {scf_energy_high:.6f} h",
-    ]
     if free_energy_corr is not None:
         header.append(f"Gcorr: {free_energy_corr:.6f} h")
     if len(frequencies) > 0:
@@ -181,7 +189,7 @@ def write_geom_file(
     return str(geom_path)
 
 # ──────────────────────────────────────────────
-# Open Babel helpers (optional)
+# Open Babel helpers 
 
 def have_obabel() -> bool:
     try:
@@ -191,17 +199,16 @@ def have_obabel() -> bool:
         print("Open Babel not installed")
         return False
 
-def convert_with_obabel(log_path: str, sdf_path: str) -> None:
-    r = subprocess.run(["obabel", log_path, "-O", sdf_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if r.returncode != 0 or not os.path.isfile(sdf_path) or os.path.getsize(sdf_path) == 0:
+def convert_with_obabel(log_path: str, mol2_path: str) -> None:
+    r = subprocess.run(["obabel", log_path, "-O", mol2_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if r.returncode != 0 or not os.path.isfile(mol2_path) or os.path.getsize(mol2_path) == 0:
         raise RuntimeError(f"Open Babel failed. STDOUT:{r.stdout} STDERR:{r.stderr}")
 
-def load_mol_from_sdf(sdf_path: str) -> Chem.Mol:
-    suppl = Chem.SDMolSupplier(sdf_path, removeHs=False, sanitize=True)
-    mols = [m for m in suppl if m is not None]
-    if not mols:
-        raise ValueError("No molecule could be read from SDF.")
-    return mols[0]
+def load_mol_from_mol2(mol2_path: str) -> Chem.Mol:
+    mol = Chem.MolFromMol2File(mol2_path, removeHs=False, sanitize=True)
+    if mol is None:
+        raise ValueError("No molecule could be read from .mol2.")
+    return mol
 
 # ──────────────────────────────────────────────
 # Remove C-bound H (cleaner 2D/CDXML)
@@ -271,25 +278,48 @@ def cleanup_glob(pattern: str = "*.v000.xyz", verbose: bool = False) -> int:
 # ──────────────────────────────────────────────
 # CDXML generation + slide properties
 
+def strip_stereo_rdkit(mol: Chem.Mol) -> Chem.Mol:
+    # Make an editable copy
+    rw = Chem.RWMol(mol)
+
+    # Clear bond stereo and directions 
+    for b in rw.GetBonds():
+        b.SetStereo(BondStereo.STEREONONE)
+        b.SetBondDir(BondDir.NONE)
+
+    # Clear atom chirality
+    for a in rw.GetAtoms():
+        a.SetChiralTag(ChiralType.CHI_UNSPECIFIED)
+
+    # Also clear any computed CIP labels if present
+    for a in rw.GetAtoms():
+        if a.HasProp('_CIPCode'):
+            a.ClearProp('_CIPCode')
+
+    new_mol = rw.GetMol()
+
+    # Remove stereochemistry perception at the RDKit level
+    Chem.RemoveStereochemistry(new_mol)
+    return new_mol
+
 def generate_cdxml(
     log_path: str,
     out_cdxml: str,
     all_cdxmls: list,
     all_props: list,
-    *,
-    fallback_props: dict | None = None,
-) -> tuple[str | None, bool, str | None]:
+    ) -> tuple[str | None, bool, str | None]:
     used_obabel = False
     mol = None
-    sdf_path = str(Path(out_cdxml).with_suffix('.sdf'))
+    mol2_path = str(Path(out_cdxml).with_suffix('.mol2'))
 
     if have_obabel():
         try:
-            convert_with_obabel(log_path, sdf_path)
-            mol = load_mol_from_sdf(sdf_path)
+            convert_with_obabel(log_path, mol2_path)
+            mol = load_mol_from_mol2(mol2_path)
+            mol = strip_stereo_rdkit(mol)
             used_obabel = True
         except Exception as exc:
-            print(f"[warning] Open Babel failed ({exc}). Falling back to cclib heuristic.", file=sys.stderr)
+            print(f"[warning] HOpen Babel failed ({exc}).", file=sys.stderr)
 
     if mol is not None:
         # Clean C-H for nicer 2D
@@ -300,45 +330,23 @@ def generate_cdxml(
 
     if not HAVE_PYCDXML:
         print("[warning] pycdxml is not available; skipping CDXML and slide.", file=sys.stderr)
-        return None, used_obabel, sdf_path if used_obabel else None
+        return None, used_obabel, mol2_path if used_obabel else None
 
     if mol is None:
         # No Open Babel or no readable molecule -> cannot generate CDXML
-        return None, used_obabel, sdf_path if used_obabel else None
+        return None, used_obabel, mol2_path if used_obabel else None
 
     cdxml_doc = cdxml_converter.mol_to_document(mol)
     cdxml_converter.write_cdxml_file(cdxml_doc, out_cdxml)
 
     props_list: list = []
     base = os.path.splitext(os.path.basename(log_path))[0]
-
-    if used_obabel and sdf_path and os.path.isfile(sdf_path):
-        try:
-            mols_prop = [m for m in Chem.SDMolSupplier(sdf_path) if m is not None]
-            if mols_prop:
-                m0 = mols_prop[0]
-                id_value = m0.GetProp("id") if m0.HasProp("id") else base
-                props_list.append(cdxml_slide_generator.TextProperty('id', id_value, color='#3f6eba'))
-                if m0.HasProp("r_mmffld_Potential_Energy-OPLS_2005"):
-                    props_list.append(
-                        cdxml_slide_generator.TextProperty('Energy', m0.GetProp("r_mmffld_Potential_Energy-OPLS_2005"), show_name=True)
-                    )
-        except Exception as exc:
-            print(f"[warning] Could not read SDF properties: {exc}", file=sys.stderr)
-
-    if not props_list and fallback_props:
-        for i, (k, v) in enumerate(fallback_props.items()):
-            props_list.append(
-                cdxml_slide_generator.TextProperty(k, v, color='#3f6eba' if i == 0 else None, show_name=(i > 0))
-            )
-
-    if not props_list:
-        props_list.append(cdxml_slide_generator.TextProperty('id', base, color='#3f6eba'))
+    props_list.append(cdxml_slide_generator.TextProperty('id', base, color='#3f6eba'))
 
     all_props.append(props_list)
     all_cdxmls.append(cdxml_doc.to_cdxml())
 
-    return out_cdxml, used_obabel, sdf_path if used_obabel else None
+    return out_cdxml, used_obabel, mol2_path if used_obabel else None
 
 # ──────────────────────────────────────────────
 # DOCX assembly
@@ -398,7 +406,7 @@ def build_parser() -> argparse.ArgumentParser:
     grp_out.add_argument('--title-size', type=int, default=14, help='Title font size in pt (default: %(default)s)')
 
     grp_slide = parser.add_argument_group('ALL.cdxml mosaic')
-    grp_slide.add_argument('--no-slide', action='store_true', help='Do not generate ALL.cdxml')
+    grp_slide.add_argument('--no-slide', action='store_true', help='Do not generate all.cdxml')
     grp_slide.add_argument('--slide-columns', type=int, default=6, help='Number of columns in the mosaic (default: %(default)s)')
 
     grp_xyz = parser.add_argument_group('3D rendering (xyzrender)')
@@ -481,7 +489,7 @@ def main() -> None:
             frequencies, atomic_numbers, geometry, args.method, out_base
         )
 
-        # 2) 3D render (PNG)
+        # 2) 3D render using xyzrender (PNG)
         png_path = str(out_base.with_suffix('.png'))
         png_created = False
         if not args.no_xyzrender:
@@ -491,20 +499,18 @@ def main() -> None:
                     print(f"[info] xyzrender args: {shlex.split(extra) if isinstance(extra, str) else extra}")
                 run_xyzrender(log_path, png_path, extra)
                 png_created = os.path.isfile(png_path)
-	            cleanup_glob("*.v000.xyz", verbose=args.verbose)
+                cleanup_glob("*.v000.xyz", verbose=args.verbose)
             except Exception as exc:
                 print(f"[warning] xyzrender unavailable or failed: {exc}", file=sys.stderr)
         else:
             png_path = ''
 
-        # 3) CDXML
+        # 3) CDXML generation
         cdxml_path = str(out_base.with_suffix('.cdxml'))
-        sdf_path = None
+        mol2_path = None
         try:
-            _, _, sdf_path = generate_cdxml(
-                log_path, cdxml_path, all_cdxmls, all_props,
-                fallback_props={"id": base, "Energy": f"{scf_energy_high:.6f} h"}
-            )
+            _, _, mol2_path = generate_cdxml(
+                log_path, cdxml_path, all_cdxmls, all_props)
         except Exception as exc:
             print(f"[warning] CDXML not generated for {base}: {exc}", file=sys.stderr)
 
@@ -524,7 +530,7 @@ def main() -> None:
         if not args.verbose:
             remove_file(geom_file, verbose=False, label='.geom')
             remove_file(png_path if png_created else None, verbose=False, label='.png')
-            remove_file(sdf_path, verbose=False, label='.sdf')
+            remove_file(mol2_path, verbose=False, label='.mol2')
             remove_file(cdxml_path if os.path.isfile(cdxml_path) else None, verbose=False, label='.cdxml')
         else:
             print("[info] Intermediates kept.")
@@ -542,9 +548,9 @@ def main() -> None:
             n_props = len(all_props[0]) if all_props and all_props[0] else 1
             sg = cdxml_slide_generator.CDXMLSlideGenerator(style='ACS 1996', number_of_properties=n_props, columns=args.slide_columns)
             slide = sg.generate_slide(all_cdxmls, all_props)
-            with open('ALL.cdxml', 'w', encoding='UTF-8') as fh:
+            with open("all.cdxml", 'w', encoding='UTF-8') as fh:
                 fh.write(slide)
-            print('[ok] ALL.cdxml generated.')
+            print('[ok] all.cdxml generated.')
         except Exception as exc:
             print(f"[warning] Slide generation failed: {exc}", file=sys.stderr)
     elif not args.no_slide and not HAVE_PYCDXML:
