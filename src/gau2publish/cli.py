@@ -27,6 +27,7 @@ from __future__ import annotations
 
 # Imports
 import argparse
+import argcomplete
 import glob
 import os
 import shlex
@@ -148,13 +149,18 @@ def atomic_numbers_to_symbols(atomic_numbers: list[int]) -> list[str]:
 
 def write_geom_file(
     charge, mult, scf_energy, scf_energy_high, free_energy_corr,
-    frequencies, atomic_numbers, geometry, method: str, out_base: Path
+    frequencies, atomic_numbers, geometry, method: str, out_base: Path, order
 ) -> str:
-    """Write coordinates + metadata to a .geom file (sorted by descending Z)."""
-    order = np.argsort(atomic_numbers)[::-1]
-    sorted_coords = [geometry[i] for i in order]
-    sorted_znums = [atomic_numbers[i] for i in order]
-    symbols = atomic_numbers_to_symbols(sorted_znums)
+    """Write coordinates + metadata to a .geom file."""
+    if order is True:
+        ordered = np.argsort(atomic_numbers)[::-1]
+        coords = [geometry[i] for i in ordered]
+        sorted_znums = [atomic_numbers[i] for i in ordered]
+        symbols = atomic_numbers_to_symbols(sorted_znums)
+    else:
+        znums = atomic_numbers
+        coords = geometry
+        symbols = atomic_numbers_to_symbols(znums)
     # Avoid repeated High energy method if is the standardly used
     if scf_energy == scf_energy_high:
         header = [
@@ -178,9 +184,9 @@ def write_geom_file(
 
     df = pd.DataFrame({
         " ": symbols,
-        "x": [float(c[0]) for c in sorted_coords],
-        "y": [float(c[1]) for c in sorted_coords],
-        "z": [float(c[2]) for c in sorted_coords],
+        "x": [float(c[0]) for c in coords],
+        "y": [float(c[1]) for c in coords],
+        "z": [float(c[2]) for c in coords],
     })
     content = "\n".join(header) + "\n" + df.to_string(index=False, header=False)
 
@@ -234,10 +240,11 @@ def remove_carbon_hydrogens(mol: Chem.Mol) -> Chem.Mol:
 
 # ──────────────────────────────────────────────
 # 3D rendering (xyzrender)
-DEFAULT_XYZRENDER_ARGS = "-S 1200"
+DEFAULT_XYZRENDER_ARGS = "-S 1200 --config paton --hy --label-size 25"
 
 def run_xyzrender(input_path: str, out_png: str, extra_args=None) -> None:
     """Run xyzrender with additional arguments (list or string)."""
+    args_def = shlex.split("-S 1200 --config paton --hy --label-size 25")
     if not extra_args:
         extra_list = []
     elif isinstance(extra_args, str):
@@ -247,7 +254,7 @@ def run_xyzrender(input_path: str, out_png: str, extra_args=None) -> None:
             extra_list = list(extra_args)
         except TypeError:
             extra_list = [str(extra_args)]
-    cmd = ["xyzrender", input_path, "--output", out_png] + extra_list
+    cmd = ["xyzrender", input_path, "--output", out_png, *args_def] + extra_list
     subprocess.run(cmd, check=True)
 
 # ──────────────────────────────────────────────
@@ -384,14 +391,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     epilog = (
         "Example:"
-        " gau2publish *.log \
-"        " --docx ESI_xyz.docx \
-"        " --method wB97XD \
-"        " --image-width 6 --title-size 14 \
-"        " --slide-columns 6 \
-"        " --xyzrender-args '-I -S 1200' \
-"        " --rebuild \
-"        " --scf-index 4,2"
+        "gau2publish *.log \
+"        "--docx ESI_xyz.docx \
+"        "--method wB97XD \
+"        "--image-width 6 --title-size 14 \
+"        "--slide-columns 6 \
+"        "--xyzrender-args '-I -S 1200' \
+"        "--rebuild \
+"        "--scf-index 4,2"
     )
     parser = argparse.ArgumentParser(description=description, formatter_class=argparse.RawDescriptionHelpFormatter, epilog=epilog)
 
@@ -413,11 +420,16 @@ def build_parser() -> argparse.ArgumentParser:
     grp_xyz.add_argument('--xyzrender-args', default=DEFAULT_XYZRENDER_ARGS, help='Arguments forwarded to xyzrender (default: "%(default)s")')
     grp_xyz.add_argument('--no-xyzrender', action='store_true', help='Do not run xyzrender (no PNG will be generated)')
 
+    grp_order = parser.add_argument_group('Order atoms')
+    grp_order.add_argument('--order', action='store_true', help='Sort atoms by atomic number, from heavy to light.')
+
     rebuild_grp = parser.add_argument_group('Rebuild DOCX from existing files')
     rebuild_grp.add_argument('--rebuild', action='store_true', help='Only assemble DOCX from existing .geom and .png with the same basenames; do not render or generate CDXML; never delete PNGs')
 
     grp_idx = parser.add_argument_group('SCF energy selection')
     grp_idx.add_argument('--scf-index', metavar='base,high', help='Define indices: D_base=base+1, D_high=(base+1)-high; Python indices = -(D_*). Default: -1,-1')
+
+    argcomplete.autocomplete(parser)
 
     return parser
 
@@ -426,7 +438,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-
+    
     doc = Document()
     all_cdxmls: list = []
     all_props: list = []
@@ -486,7 +498,7 @@ def main() -> None:
 
         geom_file = write_geom_file(
             charge, mult, scf_energy, scf_energy_high, free_energy_corr,
-            frequencies, atomic_numbers, geometry, args.method, out_base
+            frequencies, atomic_numbers, geometry, args.method, out_base, args.order
         )
 
         # 2) 3D render using xyzrender (PNG)
