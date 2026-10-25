@@ -9,16 +9,9 @@ Convert Gaussian (`.log`) outputs into:
 - `ALL.cdxml`: a slide-like mosaic with thumbnails and properties
 
 ## Installation
-
 ### pip
 ```bash
 pip install .
-```
-
-### conda (conda-forge)
-Once the recipe is merged:
-```bash
-conda install -c conda-forge gau2publish
 ```
 
 ## Usage
